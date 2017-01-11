@@ -10,6 +10,13 @@ import sys
 import cv2
 
 def target_category_loss(x, category_index, nb_classes):
+    '''
+    loss layer which gives the loss for the predicted category
+    :param x:
+    :param category_index:
+    :param nb_classes:
+    :return:
+    '''
     return tf.mul(x, K.one_hot([category_index], nb_classes))
 
 def target_category_loss_output_shape(input_shape):
@@ -33,23 +40,34 @@ def grad_cam(input_model, image, category_index, layer_name):
 
     nb_classes = 1000
     target_layer = lambda x: target_category_loss(x, category_index, nb_classes)
+    # Added the layer which gets the loss for the predicted category
     model.add(Lambda(target_layer,
-                     output_shape = target_category_loss_output_shape))
-
+                     output_shape=target_category_loss_output_shape))
+    # get the loss for the predicted category
     loss = K.sum(model.layers[-1].output)
+    # get the convolution layers output
     conv_output =  [l for l in model.layers[0].layers if l.name is layer_name][0].output
-    grads = normalize(K.gradients(loss, conv_output)[0])
-    gradient_function = K.function([model.layers[0].input], [conv_output, grads])
 
+    # get the gradient with the respect to the predicted category loss and convolution outputs
+    # and normalized them also
+    # TODO: apply Relu on convolution maps
+    grads = normalize(K.gradients(loss, conv_output)[0])
+    # made a function which givens grads and convolution outputs
+    gradient_function = K.function([model.layers[0].input], [conv_output, grads])
+    # pass the image thought it
     output, grads_val = gradient_function([image])
     output, grads_val = output[0, :], grads_val[0, :, :, :]
-
-    weights = np.mean(grads_val, axis = (0, 1))
-    cam = np.ones(output.shape[0 : 2], dtype = np.float32)
-
+    # get weights of each convolution layers as mean of GAP of the gradients
+    weights = np.mean(grads_val, axis=(0, 1))
+     # prepare heatmap
+    cam = np.ones(output.shape[0:2], dtype=np.float32)
+    # Add weighted activation maps
     for i, w in enumerate(weights):
-        cam += w * output[:, :, i]
-
+        # Added relu
+        temp = (w*output[:, :, i])
+        np.maximum(temp, 0, temp)
+        cam += temp
+    # resize and normalization
     cam = cv2.resize(cam, (224, 224))
     cam = np.maximum(cam, 0)
     cam = cam / np.max(cam)
@@ -64,10 +82,12 @@ def grad_cam(input_model, image, category_index, layer_name):
     cam = 255 * cam / np.max(cam)
     return np.uint8(cam)
 
-preprocessed_input = load_image(sys.argv[1])
+if __name__ == '__main__':
+    preprocessed_input = load_image(sys.argv[1])
 
-model = VGG16(weights='imagenet')
+    model = VGG16(include_top=True, weights='imagenet')
 
-predicted_class = np.argmax(model.predict(preprocessed_input))
-cam  = grad_cam(model, preprocessed_input, predicted_class, "block5_pool")
-cv2.imwrite("cam.jpg", cam)
+    predicted_class = np.argmax(model.predict(preprocessed_input))
+    cam = grad_cam(model, preprocessed_input, predicted_class, "block5_pool")
+    save_name = sys.argv[1][0:-4]+'_cam.jpg'
+    cv2.imwrite(save_name, cam)
